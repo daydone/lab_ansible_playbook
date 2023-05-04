@@ -7,12 +7,19 @@
   vars:
     ansible_ssh_user: root
     ansible_ssh_private_key_file: ~/.ssh/id_rsa
+    handlers:
+      - name: restart zabbix-agent.service
+        systemd:
+          name: zabbix-agent
+          state: restarted
+
   tasks:
     - name: Create sudo group
       become: true
       group:
         name: sudo
         state: present
+
     - name: Create user asv-labs with root access and set password
       become: true
       user:
@@ -22,9 +29,19 @@
         state: present
         append: yes
         groups: sudo
+
+    - name: Set zabbix conf file path
+      set_fact:
+        zabbix_conf_file_path: "/etc/zabbix_agentd.conf"
+      when: ansible_distribution == 'Fedora'
+      tags: zabbix
+
     - name: Set zabbix conf file path
       set_fact:
         zabbix_conf_file_path: "{% if ansible_distribution == 'RedHat' %}/etc/zabbix_agentd.conf{% else %}/etc/zabbi>
+      when: ansible_distribution != 'Fedora'
+      tags: zabbix
+
     - name: Install Zabbix agent and enable service
       become: true
       yum:
@@ -40,6 +57,7 @@
         state: started
       when: ansible_distribution_major_version|int >= 7
       tags: zabbix
+
     - name: start zabbix-agent
       become: true
       systemd:
@@ -47,9 +65,11 @@
         state: started
         enabled: yes
       tags: zabbix
+
     - name: Set zabbix_server_ip_line
       set_fact:
         zabbix_server_ip_line: "Server={{ zabbix_server_ip }}"
+
     - name: Configure zabbix agent IP
       become: true
       lineinfile:
@@ -57,6 +77,7 @@
         regexp: ^Server=
         line: "{{ zabbix_server_ip_line }}"
       notify: restart zabbix-agent.service
+
     - name: Configure BesClient zabbix monitoring
       become: true
       lineinfile:
@@ -66,13 +87,25 @@
         - EnableRemoteCommands=1
         - UserParameter=besclient.status,systemctl status besclient.service --no-pager --plain --full | sed -n '5s>
       notify: restart zabbix-agent.service
+
+    - name: Configure docker monitoring for zabbix
+      become: true
+      lineinfile:
+        path: "{{ zabbix_conf_file_path }}"
+        line: "{{ item }}"
+      with_items:
+        - "UserParameter=docker.containers.running,/usr/bin/docker ps --format '{{.ID}}'"
+        - "UserParameter=docker.containers.names,/usr/bin/docker ps --format '{{.Names}}'"
+      notify: restart zabbix-agent.service
+
     - name: Create mount point directory
       file:
         path: /mnt/myshare
         state: directory
+
     - name: Mount remote share
       mount:
-        path: /mnt/myshare
+        path: /svdata
         src: //shareserver/sharename
         fstype: cifs
         opts: username={{ share_username }} password={{ share_password }}
